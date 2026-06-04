@@ -1,0 +1,176 @@
+# ==========================================
+# Python
+# ==========================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+develop-eggs/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# ==========================================
+# Virtual Environments
+# ==========================================
+venv/
+env/
+ENV/
+.venv/
+.conda/
+conda-meta/
+
+# ==========================================
+# Jupyter
+# ==========================================
+.ipynb_checkpoints/
+
+# ==========================================
+# IDEs
+# ==========================================
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+
+# ==========================================
+# OS Files
+# ==========================================
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ==========================================
+# Logs
+# ==========================================
+logs/
+*.log
+
+# ==========================================
+# MLflow
+# ==========================================
+mlruns/
+mlartifacts/
+
+# ==========================================
+# Model Checkpoints
+# ==========================================
+models/*.pt
+models/*.pth
+models/*.ckpt
+models/*.onnx
+models/*.bin
+
+# Keep directory structure
+!models/.gitkeep
+
+# # ==========================================
+# # Dataset
+# # ==========================================
+# dataset/**/*.jpg
+# dataset/**/*.jpeg
+# dataset/**/*.png
+# dataset/**/*.webp
+# dataset/**/*.bmp
+# dataset/**/*.tif
+# dataset/**/*.tiff
+
+# Optional: keep labels.csv
+!dataset/labels.csv
+
+# ==========================================
+# Generated Results
+# ==========================================
+results/
+outputs/
+predictions/
+exports/
+reports/
+history/
+
+# ==========================================
+# Generated Images
+# ==========================================
+*.png
+*.jpg
+*.jpeg
+*.webp
+
+# Except documentation assets
+!docs/**/*.png
+!docs/**/*.jpg
+!docs/**/*.jpeg
+
+# ==========================================
+# SQLite Databases
+# ==========================================
+*.db
+*.sqlite
+*.sqlite3
+
+# ==========================================
+# Environment Variables
+# ==========================================
+.env
+.env.*
+!.env.example
+
+# ==========================================
+# Streamlit
+# ==========================================
+.streamlit/secrets.toml
+
+# ==========================================
+# Docker
+# ==========================================
+docker-compose.override.yml
+
+# ==========================================
+# Coverage & Testing
+# ==========================================
+.coverage
+.pytest_cache/
+htmlcov/
+.tox/
+coverage.xml
+
+# ==========================================
+# Temporary Files
+# ==========================================
+tmp/
+temp/
+*.tmp
+*.bak
+
+# ==========================================
+# Grad-CAM Outputs
+# ==========================================
+gradcam/
+heatmaps/
+
+# ==========================================
+# PDF Exports
+# ==========================================
+*.pdf
+
+# ==========================================
+# Keep Empty Folders
+# ==========================================
+!models/.gitkeep
+!results/.gitkeep
+!exports/.gitkeep
