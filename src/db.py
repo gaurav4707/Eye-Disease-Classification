@@ -300,7 +300,8 @@ def save_prediction(result, conn: sqlite3.Connection) -> int:
         ),
     )
     conn.commit()
-    return cursor.lastrowid
+    last = cursor.lastrowid
+    return int(last) if last is not None else 0
 
 
 def get_class_info(class_key: str, conn: sqlite3.Connection) -> Optional[dict]:
@@ -361,7 +362,8 @@ def register_model_version(version_tag: str,
         ),
     )
     conn.commit()
-    return cursor.lastrowid
+    last = cursor.lastrowid
+    return int(last) if last is not None else 0
 
 
 if __name__ == '__main__':

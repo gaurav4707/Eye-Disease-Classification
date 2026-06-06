@@ -28,7 +28,7 @@ import json
 import sys
 import time
 from pathlib import Path
-
+from typing import Dict, List, Tuple, Optional
 import mlflow
 import numpy as np
 import pandas as pd
@@ -104,8 +104,10 @@ def make_weighted_sampler(dataset: EyeDiseaseDataset) -> WeightedRandomSampler:
         class_weight[int(label)] for label in dataset.df['class_idx']
     ], dtype=np.float32)
 
+    # WeightedRandomSampler accepts a sequence of floats for type checkers;
+    # convert numpy array to a Python list of floats to satisfy static typing.
     sampler = WeightedRandomSampler(
-        weights=torch.from_numpy(sample_weights),
+        weights=sample_weights.tolist(),
         num_samples=len(sample_weights),
         replacement=True,
     )
@@ -191,8 +193,10 @@ def evaluate(model: nn.Module,
     all_labels = np.array(all_labels)
 
     macro_f1 = f1_score(all_labels, all_preds, average='macro', zero_division=0)
-    per_class_f1 = f1_score(all_labels, all_preds, average=None,
-                             labels=list(range(NUM_CLASSES)), zero_division=0)
+    per_class_f1 = np.asarray(
+        f1_score(all_labels, all_preds, average=None,
+                 labels=list(range(NUM_CLASSES)), zero_division=0)
+    )
     accuracy = float((all_preds == all_labels).mean())
 
     return {

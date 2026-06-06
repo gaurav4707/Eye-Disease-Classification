@@ -100,8 +100,8 @@ def get_train_transform(image_size: int = 224) -> A.Compose:
         # ── Resize + Normalise + Tensor ───────────────────────────────────────
         A.Resize(image_size, image_size),
         A.Normalize(
-            mean=[0.485, 0.456, 0.406],   # ImageNet stats (matching timm/EfficientNet)
-            std=[0.229, 0.224, 0.225],
+            mean=(0.485, 0.456, 0.406),   # ImageNet stats (matching timm/EfficientNet)
+            std=(0.229, 0.224, 0.225),
         ),
         ToTensorV2(),
     ])
@@ -115,8 +115,8 @@ def get_val_transform(image_size: int = 224) -> A.Compose:
     return A.Compose([
         A.Resize(image_size, image_size),
         A.Normalize(
-            mean=[0.485, 0.456, 0.406],
-            std=[0.229, 0.224, 0.225],
+            mean=(0.485, 0.456, 0.406),
+            std=(0.229, 0.224, 0.225),
         ),
         ToTensorV2(),
     ])
