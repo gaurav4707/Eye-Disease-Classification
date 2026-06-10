@@ -79,16 +79,10 @@ models/*.bin
 # Keep directory structure
 !models/.gitkeep
 
-# # ==========================================
-# # Dataset
-# # ==========================================
-# dataset/**/*.jpg
-# dataset/**/*.jpeg
-# dataset/**/*.png
-# dataset/**/*.webp
-# dataset/**/*.bmp
-# dataset/**/*.tif
-# dataset/**/*.tiff
+# ==========================================
+# Dataset
+# ==========================================
+dataset/
 
 # Optional: keep labels.csv
 !dataset/labels.csv
