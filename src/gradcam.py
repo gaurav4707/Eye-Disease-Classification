@@ -224,12 +224,18 @@ class GradCAM:
         """
         img_rgb = np.array(original_image.convert("RGB").resize((224, 224)))
 
-        heatmap_uint8 = np.uint8(255 * heatmap)
+        heatmap_uint8 = np.asarray(255 * heatmap, dtype=np.uint8)
         heatmap_color = cv2.applyColorMap(heatmap_uint8, colormap)
         heatmap_rgb = cv2.cvtColor(heatmap_color, cv2.COLOR_BGR2RGB)
 
+        # Convert to float for safe blending to satisfy type checkers
+        img_rgb_f = img_rgb.astype(np.float32)
+        heatmap_rgb_f = heatmap_rgb.astype(np.float32)
+
         composite = np.clip(
-            (1 - alpha) * img_rgb + alpha * heatmap_rgb, 0, 255
+            (1.0 - float(alpha)) * img_rgb_f + float(alpha) * heatmap_rgb_f,
+            0,
+            255,
         ).astype(np.uint8)
 
         return Image.fromarray(composite)
@@ -280,7 +286,11 @@ def generate_gradcam_samples(
             print(f"[gradcam] Cannot open {img_path}: {e}")
             continue
 
-        tensor = val_transform(pil_img).unsqueeze(0)  # [1, 3, 224, 224]
+        transformed = val_transform(pil_img)
+        if isinstance(transformed, torch.Tensor):
+            tensor = transformed.unsqueeze(0)  # [1, 3, 224, 224]
+        else:
+            tensor = torch.as_tensor(transformed).unsqueeze(0)
 
         heatmap = gcam.compute(tensor, class_idx=target_idx)
 

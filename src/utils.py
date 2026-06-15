@@ -145,7 +145,7 @@ class TemperatureScaler:
             return float(nll.mean())
 
         result = minimize_scalar(neg_log_likelihood, bounds=(0.05, 20.0), method="bounded")
-        self.temperature = float(result.x)
+        self.temperature = float(getattr(result, "x"))
         return self
 
     def transform(self, logits: np.ndarray) -> np.ndarray:
@@ -391,6 +391,8 @@ def save_prediction_to_db(result, db_path: str = "ocuscan.db") -> int:
         ),
     )
     row_id = c.lastrowid
+    if row_id is None:
+        raise RuntimeError("Failed to insert prediction row.")
     conn.commit()
     conn.close()
     return row_id

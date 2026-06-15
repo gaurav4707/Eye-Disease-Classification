@@ -12,9 +12,10 @@ import argparse
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
+from matplotlib.patches import Rectangle
 import seaborn as sns
 import pandas as pd
-
+from model import load_checkpoint
 from pathlib import Path
 from sklearn.metrics import (
     accuracy_score,
@@ -23,9 +24,9 @@ from sklearn.metrics import (
     confusion_matrix,
     roc_auc_score,
     roc_curve,
-    classification_report,
-    calibration_curve,
+    classification_report
 )
+from sklearn.calibration import calibration_curve
 from sklearn.calibration import CalibrationDisplay
 from sklearn.preprocessing import label_binarize
 
@@ -89,7 +90,7 @@ class TemperatureScaler:
             return -np.mean(log_probs[np.arange(len(labels)), labels])
 
         result = minimize_scalar(nll, bounds=(0.1, 10.0), method="bounded")
-        self.temperature = float(result.x)
+        self.temperature = float(getattr(result, "x"))
         return self.temperature
 
     def transform(self, logits: np.ndarray) -> np.ndarray:
@@ -132,13 +133,25 @@ def compute_all_metrics(
         y_true, y_pred, labels=list(range(n_classes)), zero_division=0
     )
 
+    # precision_recall_fscore_support may return None for some outputs in edge
+    # cases; ensure we have arrays to index into to avoid 'None is not
+    # subscriptable' errors.
+    if precision is None:
+        precision = np.zeros(n_classes, dtype=float)
+    if recall is None:
+        recall = np.zeros(n_classes, dtype=float)
+    if f1 is None:
+        f1 = np.zeros(n_classes, dtype=float)
+    if support is None:
+        support = np.zeros(n_classes, dtype=int)
+
     per_class = {}
     for i, key in enumerate(class_names):
         per_class[key] = {
             "display": DISPLAY_NAMES.get(key, key),
-            "precision": round(float(precision[i]), 4),
-            "recall": round(float(recall[i]), 4),
-            "f1": round(float(f1[i]), 4),
+            "precision": round(float(np.asarray(precision)[i]), 4),
+            "recall": round(float(np.asarray(recall)[i]), 4),
+            "f1": round(float(np.asarray(f1)[i]), 4),
             "support": int(support[i]),
         }
 
@@ -166,11 +179,21 @@ def compute_all_metrics(
     # ── SJS Recall & Symblepharon Precision (clinical stakes) ─────────────────
     sjs_idx = class_names.index("sjs")
     symb_idx = class_names.index("symblepharon")
-    sjs_recall = float(recall[sjs_idx])
-    symb_precision = float(precision[symb_idx])
+    sjs_recall = float(np.asarray(recall)[sjs_idx])
+    symb_precision = float(np.asarray(precision)[symb_idx])
 
     # ── AUC-ROC ───────────────────────────────────────────────────────────────
-    y_bin = label_binarize(y_true, classes=list(range(n_classes)))
+    y_bin = np.asarray(label_binarize(y_true, classes=list(range(n_classes))))
+    # Ensure probs is a dense numpy array. Some callers may pass a
+    # scipy.sparse spmatrix which does not support numpy-style
+    # __getitem__ indexing; convert to a dense array first.
+    # If probs is a sparse matrix or implements toarray(), convert it
+    # to a dense numpy array. Otherwise, ensure it's a numpy array.
+    toarray = getattr(probs, "toarray", None)
+    if callable(toarray):
+        probs = np.asarray(toarray())
+    else:
+        probs = np.asarray(probs)
     auc_per_class = {}
     macro_auc = None
     try:
@@ -248,7 +271,7 @@ def plot_confusion_matrix(
     ocp_chr_idx = class_names.index("ocp_chronic")
     for (row, col) in [(ocp_idx, ocp_chr_idx), (ocp_chr_idx, ocp_idx)]:
         ax.add_patch(
-            plt.Rectangle(
+            Rectangle(
                 (col, row), 1, 1,
                 fill=False, edgecolor="#e63946", linewidth=3, zorder=5,
             )
@@ -261,7 +284,7 @@ def plot_confusion_matrix(
         fontsize=8, color="#e63946",
     )
 
-    plt.tight_layout(rect=[0, 0.03, 1, 1])
+    plt.tight_layout(rect=(0, 0.03, 1, 1))
     fig.savefig(save_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     print(f"[evaluate] Confusion matrix saved → {save_path}")
@@ -277,7 +300,15 @@ def plot_roc_curves(
 ) -> None:
     """Plot per-class ROC curves (one-vs-rest) plus macro average."""
     n_classes = len(class_names)
+    # label_binarize may return a sparse matrix (spmatrix) which doesn't
+    # implement __getitem__ in some scipy versions; convert to dense array
+    # to ensure indexing like y_bin[:, i] works.
     y_bin = label_binarize(y_true, classes=list(range(n_classes)))
+    # Ensure it's a dense numpy array
+    try:
+        y_bin = np.asarray(y_bin.toarray())  # type: ignore[attr-defined]
+    except AttributeError:
+        y_bin = np.asarray(y_bin)
 
     colors = plt.cm.tab10(np.linspace(0, 1, n_classes))  # type: ignore[attr-defined]
 
@@ -301,10 +332,11 @@ def plot_roc_curves(
 
     if tprs:
         mean_tpr = np.mean(tprs, axis=0)
+        macro_auc = np.mean(np.asarray([roc_auc_score(y_bin[:, i], probs[:, i]) for i in range(n_classes)]))
         ax.plot(
             mean_fpr, mean_tpr,
             color="black", lw=2.5, linestyle="--",
-            label=f"Macro avg (AUC≈{np.mean([roc_auc_score(y_bin[:, i], probs[:, i]) for i in range(n_classes)]):.3f})",
+            label=f"Macro avg (AUC≈{macro_auc:.3f})",
         )
 
     ax.plot([0, 1], [0, 1], "k:", lw=1, label="Random classifier")
@@ -337,6 +369,8 @@ def plot_calibration_curve(
     """
     n_classes = len(class_names)
     y_bin = label_binarize(y_true, classes=list(range(n_classes)))
+    # Ensure a dense ndarray for numpy-style indexing.
+    y_bin = np.asarray(y_bin)
 
     fig, axes = plt.subplots(2, 3, figsize=(14, 9))
     axes = axes.flatten()
@@ -447,7 +481,11 @@ def run_cross_validation(
     fold_per_class_f1: dict[str, list] = {k: [] for k in CLASS_NAMES}
 
     model = OcuScanModel(num_classes=len(CLASS_NAMES))
-    model.load_checkpoint(checkpoint_path)
+    load_checkpoint(
+    Path(checkpoint_path),
+    model,
+    device=device
+)
     model.to(device)
     model.eval()
 
@@ -456,9 +494,10 @@ def run_cross_validation(
         fold_paths = X[val_idx].tolist()
         fold_labels = y[val_idx].tolist()
 
+        fold_df = pd.DataFrame({"filepath": fold_paths, "class_idx": fold_labels})
         dataset = EyeDiseaseDataset(
-            filepaths=fold_paths,
-            labels=fold_labels,
+            df=fold_df,
+            split="val",
             transform=val_transform,
         )
         loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
@@ -481,7 +520,9 @@ def run_cross_validation(
         _, _, per_f1, _ = precision_recall_fscore_support(
             all_true, all_preds, labels=list(range(len(CLASS_NAMES))), zero_division=0
         )
+        per_f1 = np.asarray(per_f1)
         for i, k in enumerate(CLASS_NAMES):
+            # per_f1 is an array of floats; index directly and cast to float
             fold_per_class_f1[k].append(float(per_f1[i]))
 
     cv_results = {
@@ -539,14 +580,16 @@ def run_svm_baseline(
     test_df = df[df["split"] == "test"].reset_index(drop=True)
 
     model = OcuScanModel(num_classes=len(CLASS_NAMES))
-    model.load_checkpoint(checkpoint_path)
+    load_checkpoint(
+    Path(checkpoint_path),
+    model,
+    device=device
+)
     model.to(device)
     model.eval()
 
-    def extract_features(filepaths, labels_list):
-        dataset = EyeDiseaseDataset(
-            filepaths=filepaths, labels=labels_list, transform=val_transform
-        )
+    def extract_features(split_df):
+        dataset = EyeDiseaseDataset(df=split_df, split="test", transform=val_transform)
         loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
         feats, ys = [], []
         with torch.no_grad():
@@ -558,13 +601,9 @@ def run_svm_baseline(
         return np.vstack(feats), np.array(ys)
 
     print("[svm] Extracting training features …")
-    X_train, y_train = extract_features(
-        train_df["filepath"].tolist(), train_df["class_idx"].tolist()
-    )
+    X_train, y_train = extract_features(train_df)
     print("[svm] Extracting test features …")
-    X_test, y_test = extract_features(
-        test_df["filepath"].tolist(), test_df["class_idx"].tolist()
-    )
+    X_test, y_test = extract_features(test_df)
 
     scaler = StandardScaler()
     X_train = scaler.fit_transform(X_train)
@@ -591,6 +630,9 @@ def run_svm_baseline(
     prec, rec, f1_, supp = precision_recall_fscore_support(
         y_test, y_pred_svm, labels=list(range(len(CLASS_NAMES))), zero_division=0
     )
+    prec = np.atleast_1d(prec)
+    rec = np.atleast_1d(rec)
+    f1_ = np.atleast_1d(f1_)
 
     svm_per_class = {
         k: {
@@ -653,7 +695,9 @@ def evaluate(
 
     print(f"[evaluate] Loading model from {checkpoint_path} …")
     model = OcuScanModel(num_classes=len(CLASS_NAMES))
-    model.load_checkpoint(checkpoint_path)
+    from pathlib import Path
+
+    load_checkpoint(Path(checkpoint_path), model, device=device)
     model.to(device)
     model.eval()
 
@@ -662,15 +706,13 @@ def evaluate(
     val_df = df[df["split"] == "val"].reset_index(drop=True)
 
     def run_inference(subset_df):
-        dataset = EyeDiseaseDataset(
-            filepaths=subset_df["filepath"].tolist(),
-            labels=subset_df["class_idx"].tolist(),
-            transform=val_transform,
-        )
+        # EyeDiseaseDataset expects a dataframe and a split name (see other usages)
+        split_name = subset_df["split"].iloc[0] if "split" in subset_df.columns else "test"
+        dataset = EyeDiseaseDataset(df=subset_df, split=split_name, transform=val_transform)
         loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
         all_logits, all_true = [], []
         with torch.no_grad():
-            for imgs, lbls in loader:
+            for imgs, lbls, _ in loader:
                 imgs = imgs.to(device)
                 logits = model(imgs)
                 all_logits.append(logits.cpu().numpy())

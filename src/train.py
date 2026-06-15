@@ -46,12 +46,30 @@ from augmentation import get_train_transform, get_val_transform
 from dataset import (CLASS_NAMES, LABELS_CSV, NUM_CLASSES, EyeDiseaseDataset,
                      apply_stratified_split)
 from model import OcuScanModel, load_checkpoint, save_checkpoint
-from utils import get_device, seed_everything
 
 MODELS_DIR = PROJECT_ROOT / 'models'
 RESULTS_DIR = PROJECT_ROOT / 'results'
 MODELS_DIR.mkdir(exist_ok=True)
 RESULTS_DIR.mkdir(exist_ok=True)
+
+
+# Reproducibility helper (lightweight replacement for pytorch_lightning.seed_everything)
+def seed_everything(seed: int = 42) -> None:
+    """Set seeds for python, numpy and torch for reproducibility."""
+    import random
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    # Deterministic behaviour can slow down training; enable for reproducibility
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
+def get_device() -> torch.device:
+    """Return available torch device (cuda if available, else cpu)."""
+    return torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -281,7 +281,9 @@ def load_checkpoint(path: Path,
 
 if __name__ == '__main__':
     import sys
-    from utils import get_device
+    # Define get_device locally (utils module may not export it)
+    def get_device():
+        return torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     print("OcuScan AI — src/model.py smoke test")
     print("=" * 50)
