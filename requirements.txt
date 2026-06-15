@@ -1,18 +1,46 @@
+# OcuScan AI — requirements.txt
+# Phase 3 | v2.0 | June 2025
+# Pinned per TRD Section 7. Install with: pip install -r requirements.txt
+
+# ── Core deep learning ─────────────────────────────────────────────────────────
 torch==2.2.2
 torchvision==0.17.2
+
+# ── Pretrained models ─────────────────────────────────────────────────────────
 timm==0.9.16
+
+# ── Data augmentation ─────────────────────────────────────────────────────────
 albumentations==2.0.8
-opencv-python-headless==4.9.0.80
+
+# ── Image processing ──────────────────────────────────────────────────────────
+opencv-python==4.9.0.80
 Pillow==10.3.0
+
+# ── ML utilities ──────────────────────────────────────────────────────────────
 scikit-learn==1.4.2
+scipy==1.13.0
+
+# ── Numerical & data ──────────────────────────────────────────────────────────
 numpy==1.26.4
 pandas==2.2.2
-streamlit==1.32.2
+
+# ── Visualisation ─────────────────────────────────────────────────────────────
 matplotlib==3.8.4
 seaborn==0.13.2
+
+# ── Experiment tracking ───────────────────────────────────────────────────────
 mlflow==2.11.3
+
+# ── Web application ───────────────────────────────────────────────────────────
+streamlit==1.32.2
+
+# ── PDF report generation ─────────────────────────────────────────────────────
 reportlab==4.1.0
+
+# ── Notebook support ──────────────────────────────────────────────────────────
+jupyter==1.0.0
 ipykernel==6.29.4
-jupyterlab==4.1.6
+ipywidgets==8.1.2
+
 tqdm==4.66.2
 setuptools==69.5.1

@@ -1,306 +1,508 @@
 """
 OcuScan AI — src/utils.py
-Shared utilities: image loading, class label mapping, CSV export,
-temperature scaling, and helper functions used across the codebase.
+Phase 3 (augments Phase 1/2 version)
+Shared utilities: image loading, class label mapping, CSV export, temperature scaling.
 """
 
-import io
-import json
+from __future__ import annotations
+
 import csv
-import time
-import uuid
+import json
+import os
 import sqlite3
+import uuid
+from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Union
-from dataclasses import dataclass, asdict
+from typing import Optional
 
 import numpy as np
-import torch
-import torch.nn.functional as F
 from PIL import Image
 
-# ── Re-export CLASS_NAMES for convenience ─────────────────────────────────────
-from dataset import CLASS_NAMES, CLASS_TO_IDX, NUM_CLASSES
+# ── Class constants ────────────────────────────────────────────────────────────
 
-PROJECT_ROOT = Path(__file__).parent.parent
+CLASS_NAMES: list[str] = [
+    "normal",         # idx 0
+    "ocp",            # idx 1
+    "ocp_chronic",    # idx 2
+    "post_viral_ded", # idx 3
+    "sjs",            # idx 4  (2 sub-photo types merged)
+    "symblepharon",   # idx 5  (sign detection)
+]
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Image loading
-# ─────────────────────────────────────────────────────────────────────────────
+DISPLAY_NAMES: dict[str, str] = {
+    "normal": "Normal",
+    "ocp": "OCP (Ocular Cicatricial Pemphigoid)",
+    "ocp_chronic": "OCP Chronic",
+    "post_viral_ded": "Post-Viral DED",
+    "sjs": "SJS (Stevens-Johnson Syndrome)",
+    "symblepharon": "Symblepharon",
+}
 
-def load_image(path: Union[str, Path]) -> Image.Image:
-    """Load any supported image format as PIL RGB."""
-    return Image.open(path).convert('RGB')
+ICD10_CODES: dict[str, str] = {
+    "normal": "Z01.01",
+    "ocp": "H10.40",
+    "ocp_chronic": "H10.40",
+    "post_viral_ded": "H04.123",
+    "sjs": "L51.1",
+    "symblepharon": "H11.231",
+}
+
+SEVERITY_TIERS: dict[str, str] = {
+    "normal": "None",
+    "ocp": "Medium",
+    "ocp_chronic": "High",
+    "post_viral_ded": "Medium",
+    "sjs": "High",
+    "symblepharon": "High",
+}
+
+EMERGENCY_CLASSES: set[str] = {"sjs"}
+SIGN_CLASSES: set[str] = {"symblepharon"}
+
+# ── Image I/O ──────────────────────────────────────────────────────────────────
+
+def load_image(path: str | Path) -> Image.Image:
+    """Load an image from disk as RGB PIL.Image."""
+    img = Image.open(path)
+    if img.mode != "RGB":
+        img = img.convert("RGB")
+    return img
 
 
-def load_image_from_bytes(data: bytes) -> Image.Image:
-    """Load image from raw bytes (e.g. Streamlit UploadedFile.read())."""
-    return Image.open(io.BytesIO(data)).convert('RGB')
-
-
-def validate_image(image: Image.Image,
-                   min_size: int = 64,
-                   max_size: int = 4096) -> tuple[bool, str]:
+def validate_image(image: Image.Image, min_dim: int = 64) -> tuple[bool, str]:
     """
-    Basic anterior segment image validation.
-    Returns (is_valid, reason_string).
+    Basic sanity check for an uploaded anterior segment image.
+    Returns (is_valid, reason_if_invalid).
+    Note: does NOT perform clinical validation — only structural checks.
     """
     w, h = image.size
-    if w < min_size or h < min_size:
-        return False, f"Image too small ({w}×{h}). Minimum {min_size}px."
-    if w > max_size or h > max_size:
-        return False, f"Image too large ({w}×{h}). Maximum {max_size}px."
-    if image.mode not in ('RGB', 'L', 'RGBA'):
-        return False, f"Unsupported colour mode: {image.mode}"
-    return True, "OK"
+    if w < min_dim or h < min_dim:
+        return False, f"Image too small ({w}×{h}); minimum {min_dim}px per side."
+    if image.mode not in {"RGB", "L", "RGBA"}:
+        return False, f"Unexpected colour mode: {image.mode}."
+    arr = np.array(image.convert("RGB"))
+    mean_brightness = float(arr.mean())
+    if mean_brightness < 5:
+        return False, "Image appears to be completely black."
+    if mean_brightness > 250:
+        return False, "Image appears to be completely white / overexposed."
+    return True, ""
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Class label mapping
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Class label utilities ──────────────────────────────────────────────────────
 
-# ICD-10 codes per class (for reporting)
-ICD10_CODES = {
-    'normal':         'Z01.01',
-    'ocp':            'L12.1',
-    'ocp_chronic':    'L12.1',
-    'post_viral_ded': 'H04.12',
-    'sjs':            'L51.1',
-    'symblepharon':   'H11.23',
-}
-
-SEVERITY_TIERS = {
-    'normal':         'None',
-    'ocp':            'Medium',
-    'ocp_chronic':    'High',
-    'post_viral_ded': 'Low',
-    'sjs':            'High',
-    'symblepharon':   'High',
-}
-
-BANNER_COLOURS = {
-    'normal':         '#2E7D32',   # green
-    'ocp':            '#F57C00',   # amber
-    'ocp_chronic':    '#C62828',   # red
-    'post_viral_ded': '#1565C0',   # blue
-    'sjs':            '#FF6F00',   # amber-emergency
-    'symblepharon':   '#B71C1C',   # deep red
-}
-
-IS_SIGN_CLASS = {cls: (cls == 'symblepharon') for cls in CLASS_NAMES}
-IS_EMERGENCY_CLASS = {cls: (cls == 'sjs') for cls in CLASS_NAMES}
-
-CONFIDENCE_THRESHOLD = 0.60   # below this → flagged for review
+def class_key_to_idx(class_key: str) -> int:
+    """Return the integer index for a class key. Raises KeyError if unknown."""
+    try:
+        return CLASS_NAMES.index(class_key)
+    except ValueError:
+        raise KeyError(f"Unknown class key: '{class_key}'. Valid: {CLASS_NAMES}")
 
 
-def class_key_to_display(class_key: str) -> str:
-    """Map class_key → human-readable display name."""
-    display_map = {
-        'normal':         'Normal',
-        'ocp':            'OCP (Ocular Cicatricial Pemphigoid)',
-        'ocp_chronic':    'OCP Chronic',
-        'post_viral_ded': 'Post-Viral DED',
-        'sjs':            'SJS (Stevens-Johnson Syndrome)',
-        'symblepharon':   'Symblepharon',
-    }
-    return display_map.get(class_key, class_key)
+def class_idx_to_key(idx: int) -> str:
+    """Return the class key for an integer index."""
+    if not 0 <= idx < len(CLASS_NAMES):
+        raise IndexError(f"Class index {idx} out of range [0, {len(CLASS_NAMES)-1}].")
+    return CLASS_NAMES[idx]
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# PredictionResult dataclass (canonical data model — matches backend schema)
-# ─────────────────────────────────────────────────────────────────────────────
-
-@dataclass
-class PredictionResult:
-    session_id: str
-    filename: str
-    predicted_class: str           # class_key
-    predicted_display: str         # human display name
-    confidence: float              # top-1 confidence 0.0–1.0
-    confidence_all: dict           # {class_key: score} all 6 classes
-    is_sign_class: bool            # True for symblepharon
-    is_emergency_class: bool       # True for sjs
-    gradcam_path: Optional[str]    = None
-    model_version: str             = 'v1.0.0'
-    inference_ms: Optional[int]    = None
-    flagged: bool                  = False   # True if confidence < 0.60
-
-    def to_dict(self) -> dict:
-        d = asdict(self)
-        d['confidence_json'] = json.dumps(d.pop('confidence_all'))
-        return d
+def class_idx_to_display(idx: int) -> str:
+    return DISPLAY_NAMES[class_idx_to_key(idx)]
 
 
-def build_prediction_result(probs: torch.Tensor,
-                             filename: str,
-                             session_id: Optional[str] = None,
-                             model_version: str = 'v1.0.0',
-                             inference_ms: Optional[int] = None) -> PredictionResult:
+def probs_to_confidence_dict(probs: np.ndarray | list[float]) -> dict[str, float]:
+    """Map a 6-element probability array to {class_key: score} dict."""
+    probs = list(probs)
+    if len(probs) != len(CLASS_NAMES):
+        raise ValueError(f"Expected {len(CLASS_NAMES)} probabilities, got {len(probs)}.")
+    return {k: round(float(p), 6) for k, p in zip(CLASS_NAMES, probs)}
+
+
+# ── Temperature scaling (standalone, no torch dependency) ─────────────────────
+
+class TemperatureScaler:
     """
-    Build PredictionResult from softmax probability tensor.
-
-    Args:
-        probs:        1-D tensor of shape [NUM_CLASSES] — softmax probabilities.
-        filename:     Original uploaded filename.
-        session_id:   UUID string; generated if None.
-        model_version: Checkpoint tag.
-        inference_ms: Latency from preprocess → forward.
-    """
-    if probs.ndim == 2:
-        probs = probs.squeeze(0)
-
-    probs_np = probs.detach().cpu().numpy()
-    top_idx = int(np.argmax(probs_np))
-    top_class = CLASS_NAMES[top_idx]
-    top_conf = float(probs_np[top_idx])
-
-    confidence_all = {cls: float(probs_np[i]) for i, cls in enumerate(CLASS_NAMES)}
-
-    return PredictionResult(
-        session_id=session_id or str(uuid.uuid4()),
-        filename=filename,
-        predicted_class=top_class,
-        predicted_display=class_key_to_display(top_class),
-        confidence=top_conf,
-        confidence_all=confidence_all,
-        is_sign_class=IS_SIGN_CLASS[top_class],
-        is_emergency_class=IS_EMERGENCY_CLASS[top_class],
-        model_version=model_version,
-        inference_ms=inference_ms,
-        flagged=top_conf < CONFIDENCE_THRESHOLD,
-    )
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Temperature scaling (post-hoc calibration)
-# ─────────────────────────────────────────────────────────────────────────────
-
-class TemperatureScaler(torch.nn.Module):
-    """
-    Single-parameter temperature scaling for model calibration.
-    Applied after training; does not change accuracy, only confidence calibration.
-    Usage:
-        scaler = TemperatureScaler()
-        scaler.fit(logits_val, labels_val)
-        calibrated_probs = scaler(logits)
+    Post-hoc temperature scaling for probability calibration.
+    Fit on val logits; transform test logits before prediction.
     """
 
-    def __init__(self):
-        super().__init__()
-        self.temperature = torch.nn.Parameter(torch.ones(1) * 1.5)
+    def __init__(self, temperature: float = 1.0):
+        self.temperature = temperature
 
-    def forward(self, logits: torch.Tensor) -> torch.Tensor:
-        return F.softmax(logits / self.temperature, dim=-1)
-
-    def fit(self, logits: torch.Tensor, labels: torch.Tensor,
-            lr: float = 0.01, max_iter: int = 50) -> float:
+    def fit(self, logits: np.ndarray, labels: np.ndarray) -> "TemperatureScaler":
         """
-        Optimise temperature on validation logits/labels using NLL loss.
-        Returns final temperature value.
+        Optimise temperature on validation set.
+        logits: (N, C) raw model logits.
+        labels: (N,) integer class indices.
         """
-        self.train()
-        optimizer = torch.optim.LBFGS([self.temperature], lr=lr, max_iter=max_iter)
-        nll_criterion = torch.nn.CrossEntropyLoss()
+        from scipy.optimize import minimize_scalar
 
-        def eval_fn():
-            optimizer.zero_grad()
-            scaled = logits / self.temperature
-            loss = nll_criterion(scaled, labels)
-            loss.backward()
-            return loss
+        def neg_log_likelihood(T: float) -> float:
+            scaled = logits / T
+            log_sum_exp = np.log(np.sum(np.exp(scaled - scaled.max(1, keepdims=True)), axis=1))
+            nll = -(scaled[np.arange(len(labels)), labels] - scaled.max(1) - log_sum_exp)
+            return float(nll.mean())
 
-        optimizer.step(eval_fn)
-        self.eval()
-        t = self.temperature.item()
-        print(f"  Temperature calibrated: T = {t:.4f}")
-        return t
+        result = minimize_scalar(neg_log_likelihood, bounds=(0.05, 20.0), method="bounded")
+        self.temperature = float(result.x)
+        return self
 
-    def save(self, path: Union[str, Path]):
-        torch.save({'temperature': self.temperature.item()}, path)
+    def transform(self, logits: np.ndarray) -> np.ndarray:
+        """Return calibrated softmax probabilities."""
+        scaled = logits / self.temperature
+        shifted = scaled - scaled.max(axis=1, keepdims=True)
+        exp_s = np.exp(shifted)
+        return exp_s / exp_s.sum(axis=1, keepdims=True)
+
+    def save(self, path: str | Path) -> None:
+        with open(path, "w") as f:
+            json.dump({"temperature": self.temperature}, f)
 
     @classmethod
-    def load(cls, path: Union[str, Path]) -> 'TemperatureScaler':
-        scaler = cls()
-        data = torch.load(path, map_location='cpu')
-        scaler.temperature = torch.nn.Parameter(
-            torch.tensor([data['temperature']])
-        )
-        return scaler
+    def load(cls, path: str | Path) -> "TemperatureScaler":
+        with open(path) as f:
+            d = json.load(f)
+        return cls(temperature=d["temperature"])
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# CSV export
-# ─────────────────────────────────────────────────────────────────────────────
+# ── CSV export ─────────────────────────────────────────────────────────────────
 
-def export_predictions_csv(results: list[PredictionResult],
-                            output_path: Union[str, Path]) -> Path:
+def export_predictions_csv(rows: list[dict], out_path: str | Path) -> None:
     """
-    Export a list of PredictionResult objects to CSV.
-    Returns the output path.
-    """
-    output_path = Path(output_path)
-    fieldnames = [
-        'session_id', 'filename', 'predicted_class', 'predicted_display',
-        'confidence', 'is_sign_class', 'is_emergency_class',
-        'flagged', 'model_version', 'inference_ms', 'gradcam_path',
-    ] + [f'conf_{cls}' for cls in CLASS_NAMES]
+    Export a list of prediction dicts to CSV.
 
-    with open(output_path, 'w', newline='', encoding='utf-8') as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+    Expected keys per row (all optional extras kept):
+        session_id, filename, predicted_class, predicted_display,
+        confidence, flagged, created_at, model_version
+    """
+    if not rows:
+        return
+
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Flatten confidence_json if present
+    flat_rows = []
+    for r in rows:
+        row = dict(r)
+        if "confidence_json" in row and isinstance(row["confidence_json"], str):
+            try:
+                conf_dict = json.loads(row["confidence_json"])
+                for k, v in conf_dict.items():
+                    row[f"conf_{k}"] = round(v, 4)
+            except (json.JSONDecodeError, TypeError):
+                pass
+            del row["confidence_json"]
+        flat_rows.append(row)
+
+    fieldnames = list(flat_rows[0].keys())
+    with open(out_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
-        for r in results:
-            row = {
-                'session_id': r.session_id,
-                'filename': r.filename,
-                'predicted_class': r.predicted_class,
-                'predicted_display': r.predicted_display,
-                'confidence': f'{r.confidence:.4f}',
-                'is_sign_class': int(r.is_sign_class),
-                'is_emergency_class': int(r.is_emergency_class),
-                'flagged': int(r.flagged),
-                'model_version': r.model_version,
-                'inference_ms': r.inference_ms or '',
-                'gradcam_path': r.gradcam_path or '',
-            }
-            for cls in CLASS_NAMES:
-                row[f'conf_{cls}'] = f"{r.confidence_all.get(cls, 0.0):.4f}"
-            writer.writerow(row)
+        writer.writerows(flat_rows)
 
-    print(f"  CSV exported → {output_path}  ({len(results)} rows)")
-    return output_path
+    print(f"[utils] CSV exported → {out_path} ({len(rows)} rows)")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Misc helpers
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Session ID ────────────────────────────────────────────────────────────────
 
-def get_device() -> torch.device:
-    """Return CUDA if available, else CPU."""
-    if torch.cuda.is_available():
-        return torch.device('cuda')
-    if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
-        return torch.device('mps')
-    return torch.device('cpu')
+def new_session_id() -> str:
+    return str(uuid.uuid4())
 
 
-def seed_everything(seed: int = 42):
-    """Seed Python random, NumPy, and PyTorch for reproducibility."""
-    import random
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
+# ── Database helpers ───────────────────────────────────────────────────────────
+
+def get_db_connection(db_path: str = "ocuscan.db") -> sqlite3.Connection:
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 
-def format_confidence(conf: float) -> str:
-    """Format confidence as percentage string."""
-    return f"{conf * 100:.1f}%"
+def init_db(db_path: str = "ocuscan.db") -> None:
+    """
+    Create database tables if they don't exist.
+    Schema: predictions, disease_classes, model_versions.
+    """
+    conn = get_db_connection(db_path)
+    c = conn.cursor()
+
+    c.executescript("""
+        CREATE TABLE IF NOT EXISTS predictions (
+            id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id              TEXT    NOT NULL,
+            filename                TEXT    NOT NULL,
+            image_path              TEXT,
+            predicted_class         TEXT    NOT NULL,
+            predicted_display       TEXT    NOT NULL,
+            confidence              REAL    NOT NULL,
+            confidence_json         TEXT    NOT NULL,
+            gradcam_path            TEXT,
+            flagged                 INTEGER NOT NULL DEFAULT 0,
+            symblepharon_warning_shown INTEGER NOT NULL DEFAULT 0,
+            sjs_emergency_shown     INTEGER NOT NULL DEFAULT 0,
+            created_at              DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            model_version           TEXT    NOT NULL DEFAULT 'v1.0.0',
+            inference_ms            INTEGER
+        );
+
+        CREATE TABLE IF NOT EXISTS disease_classes (
+            id                  INTEGER PRIMARY KEY,
+            class_key           TEXT    NOT NULL UNIQUE,
+            display_name        TEXT    NOT NULL,
+            icd10_code          TEXT    NOT NULL,
+            severity_tier       TEXT    NOT NULL,
+            is_sign             INTEGER NOT NULL DEFAULT 0,
+            sjs_subtype_note    TEXT,
+            description         TEXT    NOT NULL,
+            referral_text       TEXT    NOT NULL,
+            warning_banner_text TEXT    NOT NULL,
+            banner_colour       TEXT    NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS model_versions (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            version_tag         TEXT    NOT NULL,
+            architecture        TEXT    NOT NULL DEFAULT 'EfficientNetB0',
+            checkpoint_path     TEXT    NOT NULL,
+            num_classes         INTEGER NOT NULL DEFAULT 6,
+            class_names_json    TEXT    NOT NULL,
+            val_macro_f1        REAL,
+            val_accuracy        REAL,
+            ocp_vs_ocpchronic_f1 TEXT,
+            sjs_recall          REAL,
+            trained_at          DATETIME,
+            is_active           INTEGER NOT NULL DEFAULT 0,
+            notes               TEXT
+        );
+    """)
+    conn.commit()
+    _seed_disease_classes(conn)
+    conn.close()
+    print(f"[utils] Database initialised → {db_path}")
 
 
-if __name__ == '__main__':
-    print("OcuScan AI — src/utils.py")
-    print("Device:", get_device())
-    print("CLASS_NAMES:", CLASS_NAMES)
-    print("ICD-10 codes:", ICD10_CODES)
-    print("[OK] utils.py loaded successfully.")
+def _seed_disease_classes(conn: sqlite3.Connection) -> None:
+    """Seed the disease_classes reference table if empty."""
+    c = conn.cursor()
+    if c.execute("SELECT COUNT(*) FROM disease_classes").fetchone()[0] > 0:
+        return  # already seeded
+
+    seed_data = [
+        (
+            0, "normal", "Normal", "Z01.01", "None", 0, None,
+            "No anterior segment pathology detected. Conjunctiva appears clear with no adhesion or opacity.",
+            "No referral indicated. Routine follow-up as clinically appropriate.",
+            "No ocular pathology detected. This is a screening aid only — clinical judgement must prevail.",
+            "#22c55e",
+        ),
+        (
+            1, "ocp", "OCP (Ocular Cicatricial Pemphigoid)", "H10.40", "Medium", 0, None,
+            "Subconjunctival fibrosis with early forniceal foreshortening. "
+            "An autoimmune blistering disease with conjunctival cicatrisation.",
+            "Urgent ophthalmology referral. Systemic immunosuppression often required.",
+            "CAUTION: OCP detected. Urgent specialist review recommended. "
+            "Do not delay — disease progression can lead to blindness.",
+            "#f59e0b",
+        ),
+        (
+            2, "ocp_chronic", "OCP Chronic", "H10.40", "High", 0, None,
+            "Advanced forniceal loss, dense subconjunctival fibrosis, possible corneal involvement. "
+            "Late-stage ocular cicatricial pemphigoid.",
+            "Emergency ophthalmology referral. Corneal protection may be required.",
+            "WARNING: Chronic OCP detected. Immediate specialist review essential. "
+            "Risk of corneal exposure and permanent vision loss.",
+            "#ef4444",
+        ),
+        (
+            3, "post_viral_ded", "Post-Viral DED", "H04.123", "Medium", 0, None,
+            "Post-viral dry eye disease. Conjunctival injection, reduced tear meniscus, "
+            "possible punctate epithelial staining.",
+            "Ophthalmology review. Lubricants and anti-inflammatory drops as first line.",
+            "NOTE: Post-Viral Dry Eye Disease detected. "
+            "Ocular surface management advised — seek specialist review.",
+            "#3b82f6",
+        ),
+        (
+            4, "sjs", "SJS (Stevens-Johnson Syndrome)", "L51.1", "High", 0,
+            "SJS class merges acute (pseudomembrane, necrosis) and chronic (keratinisation, "
+            "trichiasis) sub-photo types in v1.0.",
+            "Stevens-Johnson Syndrome — severe mucocutaneous reaction. "
+            "Acute: pseudomembrane and conjunctival necrosis. "
+            "Chronic: symblepharon, trichiasis, keratinisation.",
+            "EMERGENCY: Immediate ophthalmology and dermatology referral. "
+            "Systemic management required urgently.",
+            "⚠ EMERGENCY: SJS pattern detected. Immediate specialist review required. "
+            "Ocular surface preservation is time-critical.",
+            "#f97316",
+        ),
+        (
+            5, "symblepharon", "Symblepharon", "H11.231", "High", 1, None,
+            "Fibrous adhesion band between palpebral and bulbar conjunctiva. "
+            "May indicate sequela of SJS, OCP, or chemical/thermal injury.",
+            "Urgent ophthalmology referral. Cause identification essential. "
+            "Surgical intervention may be required.",
+            "WARNING: Symblepharon detected. Urgent specialist review required. "
+            "This may indicate progressive cicatricial disease.",
+            "#ef4444",
+        ),
+    ]
+
+    c.executemany(
+        """INSERT INTO disease_classes
+           (id, class_key, display_name, icd10_code, severity_tier, is_sign,
+            sjs_subtype_note, description, referral_text, warning_banner_text, banner_colour)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+        seed_data,
+    )
+    conn.commit()
+    print("[utils] disease_classes table seeded.")
+
+
+def save_prediction_to_db(result, db_path: str = "ocuscan.db") -> int:
+    """
+    Insert a PredictionResult into the predictions table.
+    Returns the new row id.
+    """
+    conn = get_db_connection(db_path)
+    c = conn.cursor()
+    c.execute(
+        """INSERT INTO predictions
+           (session_id, filename, image_path, predicted_class, predicted_display,
+            confidence, confidence_json, gradcam_path, flagged,
+            symblepharon_warning_shown, sjs_emergency_shown,
+            created_at, model_version, inference_ms)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            result.session_id,
+            result.filename,
+            getattr(result, "image_path", None),
+            result.predicted_class,
+            result.predicted_display,
+            result.confidence,
+            json.dumps(result.confidence_all),
+            result.gradcam_path,
+            int(result.flagged),
+            int(result.is_sign_class),
+            int(result.is_emergency_class),
+            datetime.now(timezone.utc).isoformat(),
+            result.model_version,
+            result.inference_ms,
+        ),
+    )
+    row_id = c.lastrowid
+    conn.commit()
+    conn.close()
+    return row_id
+
+
+def get_class_info(class_key: str, db_path: str = "ocuscan.db") -> dict:
+    """Return the disease_classes row for a given class key as a dict."""
+    conn = get_db_connection(db_path)
+    row = conn.execute(
+        "SELECT * FROM disease_classes WHERE class_key = ?", (class_key,)
+    ).fetchone()
+    conn.close()
+    if row is None:
+        raise KeyError(f"Class key '{class_key}' not found in disease_classes table.")
+    return dict(row)
+
+
+def get_session_history(session_id: str, db_path: str = "ocuscan.db") -> list[dict]:
+    """Return all predictions for a session, newest first."""
+    conn = get_db_connection(db_path)
+    rows = conn.execute(
+        "SELECT * FROM predictions WHERE session_id = ? ORDER BY created_at DESC",
+        (session_id,),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+# ── Metrics formatting helpers ─────────────────────────────────────────────────
+
+def format_metrics_summary(metrics_json_path: str | Path) -> str:
+    """
+    Return a human-readable summary string from a metrics.json file.
+    Used in the evaluation notebook and Streamlit About page.
+    """
+    with open(metrics_json_path) as f:
+        m = json.load(f)
+
+    lines = [
+        "OcuScan AI — Model Performance Summary",
+        "=" * 42,
+        f"Accuracy          : {m.get('accuracy', 'N/A')}",
+        f"Macro F1          : {m.get('macro_f1', 'N/A')}",
+        f"Macro AUC-ROC     : {m.get('macro_auc_roc', 'N/A')}",
+        "",
+        "Per-class F1:",
+    ]
+    for key, vals in m.get("per_class", {}).items():
+        lines.append(f"  {vals['display']:<28}: {vals['f1']}")
+
+    ocp = m.get("ocp_vs_ocp_chronic", {})
+    lines += [
+        "",
+        f"OCP ↔ OCP Chronic confusion rate : {ocp.get('ocp_confusion_rate', 'N/A')}",
+    ]
+    cs = m.get("clinical_stakes", {})
+    lines += [
+        f"SJS Recall               : {cs.get('sjs_recall', 'N/A')}",
+        f"Symblepharon Precision   : {cs.get('symblepharon_precision', 'N/A')}",
+    ]
+    return "\n".join(lines)
+
+
+# ── Checkpoint helpers ─────────────────────────────────────────────────────────
+
+def register_model_version(
+    version_tag: str,
+    checkpoint_path: str,
+    metrics: Optional[dict] = None,
+    notes: Optional[str] = None,
+    db_path: str = "ocuscan.db",
+    set_active: bool = True,
+) -> None:
+    """
+    Register a trained checkpoint in model_versions table.
+    If set_active=True, deactivates all other versions first.
+    """
+    conn = get_db_connection(db_path)
+    c = conn.cursor()
+
+    if set_active:
+        c.execute("UPDATE model_versions SET is_active = 0")
+
+    ocp_f1 = None
+    if metrics:
+        pc = metrics.get("per_class", {})
+        if "ocp" in pc and "ocp_chronic" in pc:
+            ocp_f1 = json.dumps(
+                {"ocp": pc["ocp"]["f1"], "ocp_chronic": pc["ocp_chronic"]["f1"]}
+            )
+
+    c.execute(
+        """INSERT INTO model_versions
+           (version_tag, architecture, checkpoint_path, num_classes, class_names_json,
+            val_macro_f1, val_accuracy, ocp_vs_ocpchronic_f1, sjs_recall,
+            trained_at, is_active, notes)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            version_tag,
+            "EfficientNetB0",
+            checkpoint_path,
+            len(CLASS_NAMES),
+            json.dumps(CLASS_NAMES),
+            metrics.get("macro_f1") if metrics else None,
+            metrics.get("accuracy") if metrics else None,
+            ocp_f1,
+            (metrics or {}).get("clinical_stakes", {}).get("sjs_recall"),
+            datetime.now(timezone.utc).isoformat(),
+            int(set_active),
+            notes,
+        ),
+    )
+    conn.commit()
+    conn.close()
+    print(f"[utils] Model version '{version_tag}' registered.")
