@@ -123,9 +123,19 @@ class OcuScanModel(nn.Module):
         Returns:
             logits: [B, 6] — raw (unscaled) logits, NOT softmax
         """
-        features = self.backbone(x)     # [B, 1280]
+        features = self.extract_features(x)     # [B, 1280]
         logits = self.classifier(features)  # [B, 6]
         return logits
+
+    def extract_features(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Extract latent features from the EfficientNetB0 backbone before the custom classifier head.
+        Args:
+            x: [B, 3, 224, 224] float32 tensor
+        Returns:
+            features: [B, 1280] float32 tensor
+        """
+        return self.backbone(x)
 
     # ── Grad-CAM ──────────────────────────────────────────────────────────────
 

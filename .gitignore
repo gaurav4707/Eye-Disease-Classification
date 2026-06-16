@@ -168,3 +168,4 @@ heatmaps/
 !models/.gitkeep
 !results/.gitkeep
 !exports/.gitkeep
+AGENTS.md

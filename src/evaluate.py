@@ -593,8 +593,8 @@ def run_svm_baseline(
     # Temporarily tag them with a sentinel so EyeDiseaseDataset
     # can match without conflicting with real split names.
         _df = split_df.copy()
-        _df["split"] = "_extract"
-        dataset = EyeDiseaseDataset(df=_df, split="_extract", transform=val_transform)
+        _df["split"] = "val"
+        dataset = EyeDiseaseDataset(df=_df, split="val", transform=val_transform)
         loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
         feats, ys = [], []
         with torch.no_grad():
