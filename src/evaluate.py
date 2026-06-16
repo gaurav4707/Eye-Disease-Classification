@@ -504,7 +504,7 @@ def run_cross_validation(
 
         all_preds, all_true = [], []
         with torch.no_grad():
-            for imgs, lbls in loader:
+            for imgs, lbls, _ in loader:
                 imgs = imgs.to(device)
                 logits = model(imgs)
                 preds = logits.argmax(dim=1).cpu().numpy()
@@ -593,7 +593,7 @@ def run_svm_baseline(
         loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
         feats, ys = [], []
         with torch.no_grad():
-            for imgs, lbls in loader:
+            for imgs, lbls, _ in loader:
                 imgs = imgs.to(device)
                 f = model.extract_features(imgs)  # 1280-dim GlobalAvgPool output
                 feats.append(f.cpu().numpy())

@@ -172,7 +172,10 @@ class EyeDiseaseDataset(Dataset):
         assert split in ('train', 'val', 'test'), \
             f"split must be 'train', 'val', or 'test'; got '{split}'"
 
-        self.df = df[df['split'] == split].reset_index(drop=True)
+        if split is not None and 'split' in df.columns:
+            self.df = df[df['split'] == split].reset_index(drop=True)
+        else:
+            self.df = df.reset_index(drop=True)
         self.split = split
         self.transform = transform
         self.project_root = project_root
