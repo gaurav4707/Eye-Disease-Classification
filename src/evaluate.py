@@ -589,7 +589,12 @@ def run_svm_baseline(
     model.eval()
 
     def extract_features(split_df):
-        dataset = EyeDiseaseDataset(df=split_df, split="test", transform=val_transform)
+    # split_df is already filtered to the desired rows.
+    # Temporarily tag them with a sentinel so EyeDiseaseDataset
+    # can match without conflicting with real split names.
+        _df = split_df.copy()
+        _df["split"] = "_extract"
+        dataset = EyeDiseaseDataset(df=_df, split="_extract", transform=val_transform)
         loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
         feats, ys = [], []
         with torch.no_grad():
