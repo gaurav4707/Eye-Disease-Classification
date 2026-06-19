@@ -1,19 +1,27 @@
 """
 OcuScan AI — src/train.py
-Two-phase training loop with all anti-overfitting upgrades for 41-image dataset.
+Two-phase training loop with anti-overfitting upgrades.
+Originally tuned for a 41-image dataset; updated for the current
+319-image dataset (normal 109, ocp 42, ocp_chronic 34, post_viral_ded 48,
+sjs 67, symblepharon 19).
 
 Phase 1 (--phase 1):
   - Frozen backbone, head-only training
   - AdamW, lr=1e-3, weight_decay=1e-3
-  - CosineAnnealingLR T_max=20
+  - CosineAnnealingLR T_max=max_epochs (40)
   - Max 40 epochs, early stopping patience=7 on val_macro_f1
   - MixUp (α=0.2), Label smoothing (ε=0.1), WeightedRandomSampler, EMA
 
 Phase 2 (--phase 2):
   - Top 3 EfficientNet blocks + head unfrozen
-  - AdamW, lr=5e-6, weight_decay=1e-4  (TRD §3.1)
-  - CosineAnnealingLR T_max=20
-  - Max 25 epochs, early stopping patience=7
+  - AdamW, lr=2e-5, weight_decay=1e-4  (raised from 5e-6 now that the
+    dataset is ~7.8x larger — the backbone can tolerate more movement)
+  - CosineAnnealingLR T_max=max_epochs (40)
+  - Max 40 epochs (raised from 25), early stopping patience=10,
+    min_epochs=8 warmup before stopping can trigger (prevents a noisy
+    early epoch from being locked in as "best", which happened
+    previously — best epoch was 1 on the old 41-image dataset)
+  - Batch size raised 8 → 16 given more available data
   - Same MixUp / EMA / label smoothing
 
 Usage:
@@ -142,13 +150,20 @@ class EarlyStopping:
     """
     Monitor val_macro_f1 (maximise). Stop if no improvement after `patience`
     epochs. Saves best checkpoint automatically.
+
+    min_epochs: stopping (the *counter*, not checkpoint-saving) is disabled
+    until this many epochs have run. This prevents a noisy early epoch from
+    being locked in as "best" before the model has had a chance to actually
+    learn — which is what happened previously when epoch 1 was selected as
+    best on the smaller 41-image dataset.
     """
 
-    def __init__(self, patience: int = 7, min_delta: float = 1e-4,
-                 checkpoint_path: Optional[Path] = None):
+    def __init__(self, patience: int = 10, min_delta: float = 1e-4,
+                 checkpoint_path: Optional[Path] = None, min_epochs: int = 5):
         self.patience = patience
         self.min_delta = min_delta
         self.checkpoint_path = checkpoint_path
+        self.min_epochs = min_epochs
         self.best_score = -np.inf
         self.counter = 0
         self.best_epoch = 0
@@ -157,7 +172,8 @@ class EarlyStopping:
                  ema_model=None) -> bool:
         """
         Returns True if training should stop.
-        Saves checkpoint if score improved.
+        Saves checkpoint if score improved (always allowed, even pre-min_epochs,
+        since saving the best-so-far checkpoint is harmless).
         """
         if score > self.best_score + self.min_delta:
             self.best_score = score
@@ -172,7 +188,10 @@ class EarlyStopping:
             self.counter += 1
             print(f"  [EarlyStopping] No improvement for {self.counter}/{self.patience} epochs "
                   f"(best F1={self.best_score:.4f} @ epoch {self.best_epoch})")
-            if self.counter >= self.patience:
+            if epoch < self.min_epochs:
+                print(f"  [EarlyStopping] Within min_epochs warmup ({epoch}/{self.min_epochs}) — "
+                      f"not eligible to stop yet.")
+            elif self.counter >= self.patience:
                 print(f"  [EarlyStopping] Stopping. Best epoch: {self.best_epoch}, "
                       f"Best val_macro_f1: {self.best_score:.4f}")
                 return True
@@ -281,9 +300,10 @@ def train(phase: int,
 
     # ── Sampler + DataLoaders ─────────────────────────────────────────────────
     sampler = make_weighted_sampler(train_ds)
+    batch_size = 16  # raised from 8 — 319 images supports larger batches, less gradient noise
     train_loader = DataLoader(
         train_ds,
-        batch_size=8,
+        batch_size=batch_size,
         sampler=sampler,        # replaces shuffle=True
         num_workers=0,
         pin_memory=(device.type == 'cuda'),
@@ -291,7 +311,7 @@ def train(phase: int,
     )
     val_loader = DataLoader(
         val_ds,
-        batch_size=8,
+        batch_size=batch_size,
         shuffle=False,
         num_workers=0,
         pin_memory=(device.type == 'cuda'),
@@ -332,25 +352,35 @@ def train(phase: int,
         )
         max_epochs = 40
     else:
-        # Fine-tuning: low LR to preserve ImageNet features in backbone
+        # Fine-tuning: with 319 images (vs 41 originally), the backbone can
+        # tolerate a higher LR to actually move past the Phase 1 starting point.
         optimizer = torch.optim.AdamW(
             filter(lambda p: p.requires_grad, model.parameters()),
-            lr=5e-6,
+            lr=2e-5,             # raised from 5e-6 — more data tolerates more movement
             weight_decay=1e-4,   # lighter regularisation for backbone
         )
-        max_epochs = 25
+        max_epochs = 40          # raised from 25 — more data per epoch, give it room
 
-    # ── Scheduler (CosineAnnealingLR, T_max=20) ───────────────────────────────
+    # ── Scheduler (CosineAnnealingLR, T_max tied to max_epochs) ───────────────
+    # Previously fixed at T_max=20 regardless of phase; with Phase 2 now running
+    # up to 40 epochs, a fixed T_max=20 would flatten the LR near eta_min for the
+    # back half of training. Tie it to the actual schedule length.
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=20, eta_min=1e-7
+        optimizer, T_max=max_epochs, eta_min=1e-7
     )
 
     # ── Model EMA (decay=0.99 for small datasets) ─────────────────────────────
     ema_model = ModelEmaV2(model, decay=0.99, device=device)
 
     # ── Early stopping ────────────────────────────────────────────────────────
+    # Phase 2 gets more patience and a min_epochs warmup so a noisy early
+    # epoch (as happened previously — best epoch = 1) can't be locked in
+    # before the unfrozen backbone has had a chance to actually adapt.
     ckpt_path = MODELS_DIR / f'phase{phase}_best.pt'
-    early_stopper = EarlyStopping(patience=7, checkpoint_path=ckpt_path)
+    if phase == 2:
+        early_stopper = EarlyStopping(patience=10, checkpoint_path=ckpt_path, min_epochs=8)
+    else:
+        early_stopper = EarlyStopping(patience=7, checkpoint_path=ckpt_path, min_epochs=1)
 
     # ── MLflow tracking ───────────────────────────────────────────────────────
     mlflow.set_experiment(f"ocuscan_phase{phase}")
@@ -368,8 +398,9 @@ def train(phase: int,
             'label_smoothing': 0.1,
             'mixup_alpha': 0.2 if use_mixup else 0.0,
             'ema_decay': 0.99,
-            'early_stopping_patience': 7,
-            'batch_size': 8,
+            'early_stopping_patience': early_stopper.patience,
+            'early_stopping_min_epochs': early_stopper.min_epochs,
+            'batch_size': batch_size,
             'n_train': len(train_ds),
             'n_val': len(val_ds),
         })
