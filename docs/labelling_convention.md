@@ -1,176 +1,134 @@
-# OcuScan AI — Labelling Convention
-**docs/labelling_convention.md** | v2.0 | June 2025
-
-This document defines the labelling rules for all images assigned to the six anterior segment
-disease classes. It must be read before labelling any image and consulted whenever an ambiguous
-case arises. All labelling decisions are final once `labels.csv` is committed.
+# OcuScan AI — Dataset Labelling Convention
+v1.0 · June 2025 · Anterior Segment Disease Images
 
 ---
 
-## 1. Class Index Mapping
+## Purpose
 
-The following mapping is **fixed** and must not change between labelling, training, and inference.
-
-| Idx | Key              | Display Name                          |
-|-----|------------------|---------------------------------------|
-| 0   | `normal`         | Normal                                |
-| 1   | `ocp`            | OCP (Ocular Cicatricial Pemphigoid)   |
-| 2   | `ocp_chronic`    | OCP Chronic                           |
-| 3   | `post_viral_ded` | Post-Viral DED                        |
-| 4   | `sjs`            | SJS (Stevens-Johnson Syndrome)        |
-| 5   | `symblepharon`   | Symblepharon                          |
+Because OCP, OCP Chronic, SJS, and Symblepharon can visually co-occur in the same anterior
+segment image, this document defines the tiebreaking rules used to assign each image to exactly
+one class. All annotators must follow these rules. Ambiguous cases should be flagged in
+`labels.csv` using the `ambiguous_flag` and `ambiguous_note` columns.
 
 ---
 
-## 2. Per-Class Labelling Rules
+## Primary Rule
 
-### 2.1 `normal`
-Label as **normal** when:
-- The anterior segment shows a clear conjunctiva with no adhesion, scarring, or opacity.
-- No active inflammation, injection, or fibrous band is visible.
-- Tear meniscus appears normal; no epithelial irregularity evident.
+**Assign an image to the class that represents the PRIMARY visual feature in that image.**
 
-**Do NOT label as normal if** any conjunctival scarring, forniceal changes, or adhesion is
-present, even if subtle.
+If two classes are both represented, the class whose features are more prominent, more extensive,
+or more clinically relevant should win. Document the runner-up class in `ambiguous_note`.
 
 ---
 
-### 2.2 `ocp` — OCP (Ocular Cicatricial Pemphigoid)
-Label as **ocp** when:
-- The image shows **early to moderate** subconjunctival fibrosis.
-- Forniceal foreshortening is **present but mild** — the fornix is reduced but not obliterated.
-- There may be conjunctival symblepharon formation beginning, but no established fibrous bridge.
-- No gross corneal involvement (pannus, opacity) is visible.
+## Class-Specific Rules
 
-**Key discriminator vs `ocp_chronic`:** Fornix is reduced but still visible. Fibrosis is pale/
-early. The palpebral conjunctiva still shows distinct surface texture.
+### `normal` (idx 0)
+- Clear conjunctiva, no detectable abnormality
+- No adhesion bands visible
+- No significant inflammatory change
+- No conjunctival injection suggesting active disease
+- **Disqualified if:** any visible subconjunctival fibrosis, forniceal foreshortening, adhesion band, or keratinisation is present
 
----
+### `ocp` — Ocular Cicatricial Pemphigoid, active stage (idx 1)
+- Subconjunctival fibrosis visible
+- Early forniceal foreshortening (reduced inferior fornix depth)
+- No gross adhesion band spanning the entire fornix
+- No advanced dense fibrosis filling the fornix
+- **Assign as `ocp_chronic` if:** fibrosis is dense, fornix is substantially obliterated, or corneal involvement (pannus) is present
+- **Assign as `symblepharon` if:** a distinct fibrous adhesion band connecting palpebral to bulbar conjunctiva is the primary visible feature
 
-### 2.3 `ocp_chronic` — OCP Chronic
-Label as **ocp_chronic** when:
-- The image shows **advanced** subconjunctival fibrosis with **dense, white/pale fibrosis**.
-- Forniceal foreshortening is **severe or complete** — the inferior and/or superior fornix is
-  largely obliterated.
-- Corneal involvement may be present (pannus, peripheral opacity, vascularisation).
-- Multiple symblepharon bands or a continuous cicatricial membrane may be visible.
+### `ocp_chronic` — OCP, chronic/end-stage (idx 2)
+- Dense subconjunctival fibrosis
+- Significant or complete forniceal foreshortening
+- Possible corneal involvement (pannus, vascularisation)
+- Severe dry eye features (keratinisation, reduced tear meniscus)
+- **Rule:** This class requires evidence of ADVANCED structural change. Early OCP = `ocp`. Advanced = `ocp_chronic`.
+- **Assign as `symblepharon` if:** a distinct adhesion band is the primary visual feature even in the context of chronic OCP
 
-**Key discriminator vs `ocp`:** Fibrosis is denser and whiter. Fornix largely gone.
-If in doubt between `ocp` and `ocp_chronic`, choose the class that best matches the
-**dominant visual feature** (extent of forniceal loss).
+### `post_viral_ded` — Post-Viral Dry Eye Disease (idx 3)
+- Conjunctival injection (redness)
+- Reduced tear meniscus height
+- Possible punctate epithelial erosions (not visible on gross photography)
+- History of recent viral conjunctivitis (if available)
+- **No significant scarring, fibrosis, or adhesion**
+- **Disqualified if:** any conjunctival scarring or adhesion visible — reassign to `ocp`, `ocp_chronic`, or `symblepharon`
 
----
+### `sjs` — Stevens-Johnson Syndrome (idx 4)
 
-### 2.4 `post_viral_ded` — Post-Viral DED
-Label as **post_viral_ded** when:
-- The image shows conjunctival **injection** (redness) without adhesion or scarring.
-- Reduced or absent tear meniscus is visible.
-- Mild epithelial irregularity or punctate staining pattern may be present.
-- The image was taken in the context of a known or suspected post-viral dry eye presentation.
-- No fibrotic bands or symblepharon are visible.
+**Acute SJS sub-type:**
+- Pseudomembrane formation
+- Conjunctival haemorrhage / necrosis
+- Acute inflammatory changes with lid margin involvement
 
----
+**Chronic SJS sub-type:**
+- Keratinisation of the conjunctival surface
+- Trichiasis (misdirected lashes)
+- Symblepharon (if present but NOT the primary image feature — see below)
+- Corneal opacification / vascularisation
 
-### 2.5 `sjs` — SJS (Stevens-Johnson Syndrome)
-The SJS class merges two sub-photo types that were treated separately in earlier versions.
-Both are labelled `sjs`:
+**Assign as `symblepharon` if:** the dominant and most clinically prominent feature in the image is a discrete fibrous adhesion band, even if the underlying aetiology is known to be SJS.
 
-| Sub-type  | Visual Features                                                                 |
-|-----------|---------------------------------------------------------------------------------|
-| **Acute** | Pseudomembrane (grey/white conjunctival membrane), conjunctival necrosis,        |
-|           | haemorrhage, severe injection.                                                  |
-| **Chronic**| Keratinisation of the conjunctiva, trichiasis, metaplastic lashes, corneal      |
-|           | vascularisation, severe dry eye, entropion.                                     |
-
-**Exception — symblepharon priority rule:** If the dominant visual feature of a chronic SJS
-image is the **adhesion band itself** (a clearly defined fibrous bridge between palpebral
-and bulbar conjunctiva), label it as `symblepharon` instead of `sjs`.
-
----
-
-### 2.6 `symblepharon` — Symblepharon
-Label as **symblepharon** when:
-- A **clearly visible fibrous or vascular band** bridges the palpebral conjunctiva to the
-  bulbar conjunctiva.
-- The adhesion band is the **primary and dominant visual feature** of the image.
-- The band may be partial (one segment) or total (spanning the entire lid-globe junction).
-- The underlying cause may be OCP, SJS, chemical/thermal injury, or other cicatrising disease —
-  **the cause does not affect this labelling rule**.
-
-**Do NOT label as symblepharon if:**
-- The adhesion is not clearly identifiable as a bridge between lid and globe.
-- The dominant feature is fibrosis, keratinisation, or conjunctival scarring without a discrete
-  adhesion band → use `ocp`, `ocp_chronic`, or `sjs` as appropriate.
+### `symblepharon` (idx 5 — sign detection class)
+- A visible fibrous or fibrovascular adhesion band connecting the palpebral (eyelid inner surface) conjunctiva to the bulbar (eyeball surface) conjunctiva
+- The adhesion band is the **primary and dominant** visual feature of the image
+- Underlying aetiology may be OCP, SJS, chemical burn, thermal burn, or any other cicatricial cause
+- **IMPORTANT:** Assign to `symblepharon` regardless of known or suspected underlying cause, as long as the adhesion band is the primary feature
 
 ---
 
-## 3. Ambiguous Case Decision Tree
+## Tiebreaker Scenarios
 
-```
-Is a clear fibrous adhesion band visible between lid and globe?
-├── YES → label symblepharon (regardless of presumed cause)
-└── NO
-    ├── Is there pseudomembrane, necrosis, or keratinisation with known SJS context?
-    │   └── YES → label sjs
-    ├── Is there subconjunctival fibrosis with forniceal foreshortening?
-    │   ├── Advanced / dense fibrosis, fornix largely gone → ocp_chronic
-    │   └── Early / mild fibrosis, fornix still partially visible → ocp
-    ├── Is there conjunctival injection + reduced tear meniscus, post-viral context?
-    │   └── YES → post_viral_ded
-    └── No pathological features → normal
-```
+| Image Description | Correct Label | Reasoning |
+|------------------|---------------|-----------|
+| Early scarring, slight fornix shallowing | `ocp` | No dense fibrosis, no adhesion |
+| Dense fibrosis, fornix nearly obliterated, no discrete band | `ocp_chronic` | Advanced stage, no primary adhesion |
+| Dense fibrosis + visible adhesion band spanning fornix | `symblepharon` | Adhesion band is primary feature |
+| Acute SJS: pseudomembrane, necrosis | `sjs` | Acute features dominate |
+| Chronic SJS: keratinisation, trichiasis, no prominent band | `sjs` | Keratinisation is primary |
+| Chronic SJS: prominent adhesion band | `symblepharon` | Adhesion is primary feature |
+| Chemical burn sequela with adhesion band | `symblepharon` | Sign detection, cause-agnostic |
+| Mild injection, reduced tear film, no scarring | `post_viral_ded` | No structural change |
+| Clear conjunctiva, no abnormality | `normal` | No detectable pathology |
 
 ---
 
-## 4. Co-occurrence Rules
+## Flagging Ambiguous Cases
 
-Because OCP, SJS, and Symblepharon can co-occur in the same eye, the following
-priority order governs labelling when **multiple features are present**:
+In `labels.csv`, use:
+- `ambiguous_flag = 1` — image is ambiguous between two classes
+- `ambiguous_note = "ocp vs ocp_chronic — forniceal loss present but not fully obliterated"` — free text description
 
-1. **Symblepharon** — if a discrete adhesion band is the primary feature, always wins.
-2. **SJS** — if acute pseudomembrane or necrosis is present.
-3. **OCP Chronic** — if advanced fibrosis dominates over other features.
-4. **OCP** — early fibrosis without discrete adhesion band.
-5. **Post-Viral DED** — injection, DED signs, no fibrosis.
-6. **Normal** — no pathological features.
-
----
-
-## 5. Images to Exclude
-
-The following images should be **excluded from the dataset entirely** (not assigned any class):
-
-- Images where the anterior segment is not the primary subject (fundus images, OCT cross-sections).
-- Images that are overexposed, completely dark, or show severe motion blur obscuring all features.
-- Images of the external face/eyelid only without visible conjunctiva or cornea.
-- Duplicate images (identical pixel content) — keep only one copy.
-- Heavily watermarked images where the watermark obscures pathological features.
+Ambiguous images are still assigned to one class (the primary labeller's best judgement). They are:
+- Tracked separately during analysis
+- Excluded from disagreement calculations in inter-rater reliability studies
+- Candidates for expert clinical review in v2.0
 
 ---
 
-## 6. Audit Trail
+## Quality Requirements
 
-All labelling decisions for ambiguous cases must be noted in `dataset/labelling_log.csv` with
-the following columns:
+All images in the dataset must meet these minimum quality standards:
 
-| Column        | Description                                         |
-|---------------|-----------------------------------------------------|
-| `filepath`    | Relative path to the image                          |
-| `assigned_class` | Final class_key assigned                         |
-| `ambiguity`   | Brief description of why the image was ambiguous    |
-| `decision`    | The decision rationale                              |
-| `reviewer`    | Initials of the person who made the final decision  |
-| `date`        | ISO 8601 date of decision                           |
+| Requirement | Minimum |
+|------------|---------|
+| Resolution | ≥ 224 × 224 pixels |
+| Focus | Eye region in focus; acceptable slight peripheral blur |
+| Illumination | Adequate; neither completely dark nor overexposed |
+| Eye coverage | Anterior segment (conjunctiva, cornea, visible fornix) fills ≥ 50% of frame |
+| Format | JPEG, PNG, or WEBP |
+| File size | < 10 MB |
 
-This log is committed alongside `labels.csv` and reviewed during Week 3 evaluation
-to identify systematic labelling errors that may explain model confusion patterns.
+**Reject if:** image is a fundus photograph, OCT scan, retinal image, or systemic skin lesion photograph.
 
 ---
 
-## 7. Version History
+## Inter-Rater Reliability
 
-| Version | Date       | Change                                           |
-|---------|------------|--------------------------------------------------|
-| v1.0    | 2025-05-01 | Initial convention for 4-class dataset           |
-| v2.0    | 2025-06-01 | Added Symblepharon as 6th class; SJS sub-types   |
-|         |            | merged; co-occurrence priority rules formalised  |
+For each ambiguous image (where `ambiguous_flag = 1`), a second independent annotator should
+review and record their label in a separate column. Cohen's kappa should be computed for the
+complete dataset before model training. Target kappa ≥ 0.75 (substantial agreement).
+
+---
+
+*OcuScan AI Labelling Convention v1.0 · June 2025 · Confidential*

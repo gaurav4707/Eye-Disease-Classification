@@ -173,7 +173,8 @@ def preprocess(image: Image.Image) -> torch.Tensor:
     if image.mode != "RGB":
         image = image.convert("RGB")
     transform = _get_val_transform()
-    tensor = transform(image)          # [3, 224, 224]
+    transformed = transform(image=np.array(image))
+    tensor = transformed["image"] if isinstance(transformed, dict) else transformed
     return tensor.unsqueeze(0)         # [1, 3, 224, 224]
 
 

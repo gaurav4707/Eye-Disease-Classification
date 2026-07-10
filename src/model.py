@@ -114,6 +114,13 @@ class OcuScanModel(nn.Module):
         n = sum(p.numel() for p in self.parameters())
         print(f"  [Model] All params unfrozen. Total: {n:,}")
 
+    def load_checkpoint(self,
+                        path: Path,
+                        optimizer: Optional[torch.optim.Optimizer] = None,
+                        device: str = 'cpu') -> dict:
+        """Load checkpoint into this model instance (and optionally optimizer)."""
+        return load_checkpoint(path, self, optimizer=optimizer, device=device)
+
     # ── Forward pass ──────────────────────────────────────────────────────────
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
