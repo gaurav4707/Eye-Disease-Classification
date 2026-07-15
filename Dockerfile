@@ -10,19 +10,18 @@ FROM python:3.10-slim
 
 # ── System dependencies ────────────────────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    # OpenCV runtime
-    libgl1-mesa-glx \
+    libgl1 \
     libglib2.0-0 \
     libsm6 \
     libxext6 \
     libxrender-dev \
-    # Build essentials for some Python packages
     gcc \
     g++ \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Working directory ──────────────────────────────────────────────────────────
 WORKDIR /app
+ENV PYTHONPATH="/app/src:/app"
 
 # ── Copy requirements first (Docker layer cache optimisation) ─────────────────
 COPY requirements.txt .
@@ -34,16 +33,21 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # ── Copy application source ────────────────────────────────────────────────────
 COPY src/ ./src/
 COPY app/ ./app/
-COPY dataset/labels.csv ./dataset/labels.csv 2>/dev/null || true
+
+# labels.csv — copy only if present, using RUN + shell test
+COPY dataset/ ./dataset_src/
+RUN mkdir -p ./dataset && \
+    if [ -f ./dataset_src/labels.csv ]; then cp ./dataset_src/labels.csv ./dataset/labels.csv; fi && \
+    rm -rf ./dataset_src
 
 # ── Create required directories ────────────────────────────────────────────────
 RUN mkdir -p models results/gradcam dataset/normal dataset/ocp \
     dataset/ocp_chronic dataset/post_viral_ded dataset/sjs dataset/symblepharon
 
-# ── Streamlit configuration ────────────────────────────────────────────────────
-RUN mkdir -p /root/.streamlit
-COPY docker/streamlit_config.toml /root/.streamlit/config.toml 2>/dev/null || \
+# streamlit config — always write default, then overwrite if a custom one exists in the build context
+RUN mkdir -p /root/.streamlit && \
     printf '[server]\nheadless = true\nport = 8501\nenableCORS = false\nenableXsrfProtection = false\n\n[browser]\ngatherUsageStats = false\n' > /root/.streamlit/config.toml
+COPY docker/streamlit_config.tom[l] /root/.streamlit/
 
 # ── Environment variables ──────────────────────────────────────────────────────
 ENV PYTHONUNBUFFERED=1
